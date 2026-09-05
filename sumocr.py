@@ -262,6 +262,20 @@ def run_folder(job: Job, folder: Path) -> int:
     return failed
 
 
+def _products(job: Job) -> str:
+    """What a run would actually write, for --dry-run output."""
+    parts = []
+    if job.wants_summary:
+        parts.append("summary")
+    if job.wants_markdown:
+        parts.append("markdown")
+    if job.args.text_layer:
+        parts.append(
+            "text layer (in place)" if job.args.replace_pdf else "text layer (copy)"
+        )
+    return ", ".join(parts) or "nothing"
+
+
 def _report_plan(job: Job, path: Path) -> None:
     """Say what would happen to a file, without calling any model."""
     if path.suffix.lower() == ".pdf":
@@ -285,9 +299,9 @@ def _report_plan(job: Job, path: Path) -> None:
                 if empty
                 else f"use the text layer of all {total} page(s)"
             )
-        log(f"  would {plan}, then produce: {job.args.action}")
+        log(f"  would {plan}, then produce: {_products(job)}")
     else:
-        log(f"  would extract text, then produce: {job.args.action}")
+        log(f"  would extract text, then produce: {_products(job)}")
 
 
 # --------------------------------------------------------------------------
@@ -511,9 +525,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     what = parser.add_argument_group("what to produce")
     what.add_argument(
-        "--action", choices=["summary", "markdown", "both"], default="summary",
+        "--action", choices=["summary", "markdown", "both", "none"], default="summary",
         help="summary: an AI summary. markdown: the document text as Markdown, no "
-        "LLM. both: both files. Default: summary",
+        "LLM. both: both files. none: write no summary or Markdown at all, for "
+        "runs whose only purpose is --text-layer. Default: summary",
     )
     what.add_argument(
         "--style", choices=["auto", "general", "paper"], default="auto",
@@ -657,6 +672,11 @@ def validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     if args.replace_pdf and not args.text_layer:
         parser.error("--replace-pdf only makes sense with --text-layer")
+    if args.action == "none" and not args.text_layer:
+        parser.error(
+            "--action none produces nothing on its own; add --text-layer to make "
+            "the OCR-ed PDFs searchable"
+        )
     if args.text_layer and args.ocr == "never":
         parser.error("--text-layer needs OCR; drop --ocr never")
     if args.max_minutes is not None and args.max_minutes <= 0:

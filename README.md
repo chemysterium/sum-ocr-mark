@@ -116,7 +116,8 @@ on this computer to communicate with Zotero* enabled.
 ### What to produce
 
 `--action summary` (default) writes an AI summary; `markdown` writes the
-extracted text with no LLM involved; `both` writes both files.
+extracted text with no LLM involved; `both` writes both files; `none`
+writes neither, for runs whose only purpose is `--text-layer`.
 
 `--style paper` shapes the summary as background / methods / findings /
 limitations; `general` covers purpose, main points and conclusions. The
@@ -162,6 +163,26 @@ python sumocr.py --file scan.pdf --text-layer
 # Make the Zotero attachment itself searchable, in place
 python sumocr.py --zotero-item ABCD1234 --text-layer --replace-pdf
 ```
+
+To do only this — no summaries, no Markdown, just make scanned PDFs
+searchable — use `--action none`:
+
+```bash
+# See which of your Zotero PDFs would be OCR-ed, changing nothing
+python sumocr.py --zotero-all --zotero-local --action none --text-layer \
+    --replace-pdf --dry-run
+
+# Then do it
+python sumocr.py --zotero-all --zotero-local --action none --text-layer \
+    --replace-pdf
+```
+
+`--ocr auto` (the default) means only pages that actually lack a text layer
+are sent to the OCR model, so a library of mostly born-digital PDFs costs
+almost nothing to sweep — the already-searchable ones are opened, found to
+need nothing, and left alone. `--zotero-local` avoids needing an API key,
+and works here because the PDFs are edited on disk rather than through the
+read-only API.
 
 `--replace-pdf` overwrites the original, keeping it as `<name>.pdf.bak` and
 writing through a temporary file, so an interrupted run cannot leave a
