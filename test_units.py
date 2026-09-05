@@ -121,6 +121,24 @@ def test_text_layer_strips_markdown_decoration():
     assert "₃" in textlayer._plain(r"HF-HNO \( _{3} \)")
 
 
+def test_output_dir_mirrors_the_source_tree():
+    # Same filename in two subfolders must not collide into one output file.
+    folder = Path("/docs")
+    out = Path("/out")
+    a = sumocr._output_dir_for(folder / "2023" / "summary.pdf", folder, out)
+    b = sumocr._output_dir_for(folder / "2024" / "summary.pdf", folder, out)
+    assert a != b
+    assert a == out / "2023" and b == out / "2024"
+
+    # A file directly in the folder lands at the top of the output dir.
+    assert sumocr._output_dir_for(folder / "summary.pdf", folder, out) == out
+
+    # With no --output-dir, outputs sit beside each source.
+    assert sumocr._output_dir_for(
+        folder / "2023" / "summary.pdf", folder, None
+    ) == folder / "2023"
+
+
 def _text_layer_job(**overrides):
     """A Job configured for a text-layer-only run, with no LM Studio behind it."""
     import argparse

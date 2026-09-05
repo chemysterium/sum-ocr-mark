@@ -266,7 +266,9 @@ model:
 - A **Markdown export** is always a file: `<name>.md` beside the source (or
   `<name>.extracted.md` if that would overwrite the input).
 - Summaries written to disk are `<name>.summary.md` / `.txt` / `.html`.
-- `--output PATH` names one exact file; `--output-dir DIR` collects a batch.
+- `--output PATH` names one exact file; `--output-dir DIR` collects a batch,
+  mirroring the source tree underneath it so that same-named files in
+  different subfolders do not overwrite each other.
 - Zotero summaries are saved back as a child note named `AI Summary: <title>`.
   Add `--no-note` to get a file instead, or `--output-dir` to get both.
 

@@ -279,6 +279,23 @@ def collect_files(folder: Path, recursive: bool) -> list[Path]:
     return files
 
 
+def _output_dir_for(path: Path, folder: Path, out_dir: Path | None) -> Path:
+    """Where one folder document's outputs go.
+
+    With --output-dir the source tree is mirrored underneath it, rather than
+    flattened into it. Flattening silently loses work: a recursive run over a
+    tree with reports/2023/summary.pdf and reports/2024/summary.pdf would
+    write both to summary.md, the second overwriting the first, and still
+    report two files processed.
+    """
+    if out_dir is None:
+        return path.parent
+    try:
+        return out_dir / path.parent.relative_to(folder)
+    except ValueError:  # not under `folder` — keep it flat rather than fail
+        return out_dir
+
+
 def run_folder(job: Job, folder: Path) -> int:
     files = collect_files(folder, job.args.recursive)
     if not files:
@@ -290,9 +307,9 @@ def run_folder(job: Job, folder: Path) -> int:
     processed = skipped = failed = 0
     for i, path in enumerate(files, 1):
         log(f"[{i}/{len(files)}] {path.name}")
+        target_dir = _output_dir_for(path, folder, out_dir)
 
         if job.args.skip_existing:
-            target_dir = out_dir or path.parent
             done = (
                 not job.wants_summary
                 or summary_path(path.stem, target_dir, job.args.format).exists()
@@ -317,7 +334,7 @@ def run_folder(job: Job, folder: Path) -> int:
             continue
 
         try:
-            process_file(job, path, out_dir, to_stdout=False)
+            process_file(job, path, target_dir, to_stdout=False)
             processed += 1
         except SkipDocument as reason:
             log(f"  skipped: {reason}")
