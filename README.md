@@ -195,6 +195,12 @@ skipped rather than failed:
 Done. 2 would process, 56 skipped, 0 failed.
 ```
 
+Zotero answers every request in about the same two seconds whatever it
+returns, so batch runs fetch all attachments in one paginated sweep rather
+than asking per item, and list items 500 at a time instead of pyzotero's
+default 25. On a 2800-item library that is the difference between a couple
+of minutes and about two hours.
+
 The already-searchable check reads page text only, and happens before the
 Markdown extraction pass, so skipping a 100-page PDF is near-instant and
 costs no model time. `--zotero-local` avoids needing an API key, and works

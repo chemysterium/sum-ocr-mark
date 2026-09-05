@@ -113,6 +113,27 @@ class Job:
         self.text_layer_only = (
             args.text_layer and not self.wants_summary and not self.wants_markdown
         )
+        # Set by a batch run to every item's PDF attachment, fetched in one
+        # sweep — see pdf_attachment().
+        self.attachments: dict[str, dict] | None = None
+
+    def pdf_attachment(self, zot, key: str) -> dict:
+        """An item's PDF attachment, from the prefetched index when there is one.
+
+        Every request to Zotero costs a fixed couple of seconds whatever it
+        returns, so a batch resolves all attachments up front rather than
+        asking per item.
+        """
+        import zotero_source
+
+        if self.attachments is None:
+            return zotero_source.find_pdf_attachment(zot, key)
+        attachment = self.attachments.get(key)
+        if attachment is None:
+            raise zotero_source.ProcessingError(
+                f"No PDF attachment found under item {key}"
+            )
+        return attachment
 
     def skip_if_done(self, path: Path) -> None:
         """Raise SkipDocument when a text-layer run has nothing to add.
@@ -355,7 +376,7 @@ def zotero_extraction(job: Job, zot, key: str) -> Extraction:
     import zotero_source
 
     try:
-        attachment = zotero_source.find_pdf_attachment(zot, key)
+        attachment = job.pdf_attachment(zot, key)
     except zotero_source.ProcessingError:
         # An item with no PDF — a book record, a web link, a note — is simply
         # not something a text-layer run has any business with.
@@ -432,6 +453,17 @@ def run_zotero_batch(job: Job, zot, papers: list[dict]) -> int:
         log("Checking which items already have an AI Summary note...")
         summarized = zotero_source.get_summarized_keys(zot)
 
+    # One sweep for every attachment, instead of a request per item: on a
+    # whole library that is the difference between a minute and two hours.
+    if len(papers) > 3 and job.attachments is None:
+        log("Fetching the attachment list...")
+        started = time.monotonic()
+        job.attachments = zotero_source.get_pdf_attachments(zot)
+        log(
+            f"  {len(job.attachments)} PDF attachment(s) in "
+            f"{time.monotonic() - started:.0f}s"
+        )
+
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
     processed = skipped = failed = 0
     ran_out_of_time = False
@@ -455,7 +487,7 @@ def run_zotero_batch(job: Job, zot, papers: list[dict]) -> int:
 
         if args.dry_run:
             try:
-                attachment = zotero_source.find_pdf_attachment(zot, paper["key"])
+                attachment = job.pdf_attachment(zot, paper["key"])
             except zotero_source.ProcessingError as exc:
                 if job.text_layer_only:
                     log("  would skip: no PDF attachment")
@@ -526,7 +558,7 @@ def run_zotero(job: Job) -> int:
                 log("  already summarized, would skip (use --force to redo)")
                 return 0
             try:
-                attachment = zotero_source.find_pdf_attachment(zot, key)
+                attachment = job.pdf_attachment(zot, key)
                 path = zotero_source.local_pdf_path(attachment)
                 if path:
                     _report_plan(job, path)

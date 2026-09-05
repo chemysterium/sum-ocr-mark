@@ -21,6 +21,12 @@ from lmstudio import log
 import config
 
 ITEM_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
+
+# Every Zotero request costs roughly the same couple of seconds whatever it
+# returns, so the page size — not the amount of data — decides how long a
+# library-wide listing takes. pyzotero's default of 25 turns 2800 items into
+# a 70-second wait; 500 does it in under 20.
+PAGE_SIZE = 500
 SUMMARY_MARKER = "AI Summary:"
 
 
@@ -79,7 +85,7 @@ def resolve_collection(zot: zotero.Zotero, query: str) -> str:
     if ITEM_KEY_RE.match(query):
         return query
 
-    collections = zot.everything(zot.collections())
+    collections = zot.everything(zot.collections(limit=PAGE_SIZE))
     matches = [c for c in collections if c["data"]["name"].lower() == query.lower()]
     if not matches:
         matches = [c for c in collections if query.lower() in c["data"]["name"].lower()]
@@ -105,7 +111,9 @@ def get_collection_papers(
     zot: zotero.Zotero, collection_key: str, recursive: bool = False
 ) -> list[dict]:
     """Top-level items in a collection, optionally including its subcollections."""
-    papers = _papers_from_items(zot.everything(zot.collection_items_top(collection_key)))
+    papers = _papers_from_items(
+        zot.everything(zot.collection_items_top(collection_key, limit=PAGE_SIZE))
+    )
     if recursive:
         seen = {p["key"] for p in papers}
         for child in zot.collections_sub(collection_key):
@@ -118,7 +126,7 @@ def get_collection_papers(
 
 def get_all_papers(zot: zotero.Zotero) -> list[dict]:
     """Every top-level paper in the library: all collections plus loose items."""
-    return _papers_from_items(zot.everything(zot.top()))
+    return _papers_from_items(zot.everything(zot.top(limit=PAGE_SIZE)))
 
 
 # --------------------------------------------------------------------------
@@ -160,7 +168,7 @@ def get_summarized_keys(zot: zotero.Zotero) -> set[str]:
     thousands of requests before any summarizing starts.
     """
     keys = set()
-    for note in zot.everything(zot.items(itemType="note")):
+    for note in zot.everything(zot.items(itemType="note", limit=PAGE_SIZE)):
         data = note["data"]
         parent = data.get("parentItem")
         note_html = data.get("note", "")
@@ -191,6 +199,26 @@ def delete_blank_summary_notes(zot: zotero.Zotero, parent_key: str) -> None:
 # --------------------------------------------------------------------------
 # Getting at the PDF
 # --------------------------------------------------------------------------
+
+def get_pdf_attachments(zot: zotero.Zotero, page_size: int = PAGE_SIZE) -> dict[str, dict]:
+    """Map every item key to its PDF attachment, in one paginated sweep.
+
+    Asking children() per item is the obvious way and the wrong one: every
+    request to Zotero costs about the same fixed couple of seconds whatever it
+    returns, so a library-wide run spends hours doing nothing but waiting.
+    Fetching all attachments a few hundred at a time turns thousands of
+    requests into a handful.
+
+    Items with several PDFs keep the first, matching find_pdf_attachment().
+    """
+    index: dict[str, dict] = {}
+    for item in zot.everything(zot.items(itemType="attachment", limit=page_size)):
+        data = item["data"]
+        parent = data.get("parentItem")
+        if parent and data.get("contentType") == "application/pdf":
+            index.setdefault(parent, data | {"key": item["key"]})
+    return index
+
 
 def find_pdf_attachment(zot: zotero.Zotero, parent_key: str) -> dict:
     for child in zot.children(parent_key):
