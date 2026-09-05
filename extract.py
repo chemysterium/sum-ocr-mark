@@ -136,6 +136,7 @@ def extract_pdf(
     dpi: int = 200,
     min_page_chars: int = MIN_PAGE_CHARS,
     want_boxes: bool = False,
+    need_text: bool = True,
 ) -> Extraction:
     """PDF text as Markdown, OCR-ing pages according to `ocr_mode`.
 
@@ -147,6 +148,10 @@ def extract_pdf(
     want_boxes forces the grounding prompt, whose per-block coordinates are
     what a text layer needs, and keeps the parsed blocks on the result. One
     OCR pass then serves both the summary and the searchable PDF.
+
+    need_text=False skips reading the pages that already have a text layer,
+    for runs that only write a text layer and never look at the document's
+    words. On a long PDF that Markdown pass is the bulk of the work.
     """
     import pymupdf
     import pymupdf4llm
@@ -182,7 +187,7 @@ def extract_pdf(
         # is what lets the two sources be interleaved below.
         rendered: dict[int, str] = {}
         ocr_blocks: dict[int, list] = {}
-        if text_pages:
+        if text_pages and need_text:
             chunks = pymupdf4llm.to_markdown(
                 doc,
                 pages=[n - 1 for n in text_pages],
@@ -223,7 +228,7 @@ def extract_pdf(
         source=path, ocr_blocks=ocr_blocks,
     )
 
-    if len(body.strip()) < MIN_USEFUL_CHARS:
+    if need_text and len(body.strip()) < MIN_USEFUL_CHARS:
         empty_count = total - sum(1 for n in range(1, total + 1) if rendered.get(n))
         hint = (
             "Every page came back empty — the PDF is almost certainly scanned. "
@@ -329,6 +334,7 @@ def extract(
     dpi: int = 200,
     min_page_chars: int = MIN_PAGE_CHARS,
     want_boxes: bool = False,
+    need_text: bool = True,
 ) -> Extraction:
     """Extract any supported document, OCR-ing as `ocr_mode` directs."""
     if not path.exists():
@@ -346,7 +352,7 @@ def extract(
     if suffix == ".pdf":
         result = extract_pdf(
             path, client, ocr_mode, ocr_model, ocr_prompt, dpi, min_page_chars,
-            want_boxes,
+            want_boxes, need_text,
         )
     elif suffix in IMAGE_SUFFIXES:
         result = extract_image(path, client, ocr_model, ocr_prompt)
@@ -360,7 +366,7 @@ def extract(
             f"Supported: {', '.join(sorted(SUPPORTED_SUFFIXES))}"
         )
 
-    if suffix != ".pdf" and len(result.text.strip()) < MIN_USEFUL_CHARS:
+    if need_text and suffix != ".pdf" and len(result.text.strip()) < MIN_USEFUL_CHARS:
         raise DocumentError(
             f"Extracted only {len(result.text.strip())} characters from {path.name}."
         )

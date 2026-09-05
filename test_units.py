@@ -121,6 +121,61 @@ def test_text_layer_strips_markdown_decoration():
     assert "₃" in textlayer._plain(r"HF-HNO \( _{3} \)")
 
 
+def _text_layer_job(**overrides):
+    """A Job configured for a text-layer-only run, with no LM Studio behind it."""
+    import argparse
+
+    args = argparse.Namespace(
+        action="none", text_layer=True, replace_pdf=False, ocr="auto",
+        min_page_chars=80, language="auto", ocr_prompt="free", chunk_chars=None,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return sumocr.Job(args, client=None)
+
+
+def _pdf(tmp: Path, name: str, texts: list[str]) -> Path:
+    """A PDF whose pages carry the given text ("" for a page with no text)."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    for body in texts:
+        page = doc.new_page()
+        if body:
+            page.insert_text((72, 100), body, fontsize=11)
+    path = tmp / name
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_text_layer_run_skips_pdfs_that_are_already_searchable():
+    import tempfile
+
+    filled = "Lithium isotope fractionation was measured in 24 samples today. " * 3
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        job = _text_layer_job()
+
+        # Every page has text: nothing to add, so the whole file is skipped.
+        done = _pdf(tmp, "done.pdf", [filled, filled])
+        try:
+            job.skip_if_done(done)
+            raise AssertionError("a fully searchable PDF should have been skipped")
+        except sumocr.SkipDocument as reason:
+            assert "already have a text layer" in str(reason)
+
+        # One blank page is enough to make the file worth processing.
+        partial = _pdf(tmp, "partial.pdf", [filled, ""])
+        job.skip_if_done(partial)  # must not raise
+
+        # --ocr force deliberately re-reads everything, so nothing is skipped.
+        _text_layer_job(ocr="force").skip_if_done(done)
+
+        # A run that also wants a summary must not skip on these grounds.
+        _text_layer_job(action="summary").skip_if_done(done)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:

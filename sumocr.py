@@ -49,6 +49,17 @@ from lmstudio import LMStudio, LMStudioError, OCR_PROMPTS, log
 SUFFIX_BY_FORMAT = {"md": ".md", "txt": ".txt", "html": ".html"}
 
 
+class SkipDocument(Exception):
+    """This document needs nothing doing — not an error.
+
+    A run that only adds text layers has plenty of legitimate no-ops: a PDF
+    that is already searchable, an item whose PDF was never attached, an
+    attachment that is not synced to this machine. None of those is a
+    failure, and reporting them as failures would bury the real ones in a
+    sweep over a whole library.
+    """
+
+
 # --------------------------------------------------------------------------
 # Output paths
 # --------------------------------------------------------------------------
@@ -97,6 +108,26 @@ class Job:
         self.chunk_chars = args.chunk_chars
         self.wants_summary = args.action in ("summary", "both")
         self.wants_markdown = args.action in ("markdown", "both")
+        # A run whose only product is the text layer never needs the document's
+        # text, which lets it skip whole files cheaply — see skip_if_done().
+        self.text_layer_only = (
+            args.text_layer and not self.wants_summary and not self.wants_markdown
+        )
+
+    def skip_if_done(self, path: Path) -> None:
+        """Raise SkipDocument when a text-layer run has nothing to add.
+
+        Checked before any extraction: reading the page text is cheap, while
+        the Markdown pass over a 100-page PDF is not, and in a library sweep
+        almost every file lands here.
+        """
+        if not self.text_layer_only or self.args.ocr == "force":
+            return
+        if path.suffix.lower() != ".pdf":
+            raise SkipDocument("not a PDF, so it has no text layer to add")
+        total, empty = extract.pdf_page_report(path, self.args.min_page_chars)
+        if not empty:
+            raise SkipDocument(f"all {total} page(s) already have a text layer")
 
     def extract(self, path: Path) -> Extraction:
         return extract.extract(
@@ -108,6 +139,7 @@ class Job:
             dpi=self.args.ocr_dpi,
             min_page_chars=self.args.min_page_chars,
             want_boxes=self.args.text_layer,
+            need_text=not self.text_layer_only,
         )
 
     def write_text_layer(self, extraction: Extraction, directory: Path | None) -> None:
@@ -172,6 +204,7 @@ class Job:
 
 def process_file(job: Job, path: Path, directory: Path | None, to_stdout: bool) -> None:
     """Extract one file and write whichever outputs were asked for."""
+    job.skip_if_done(path)
     log(f"Extracting {path.name}...")
     extraction = job.extract(path)
     log(f"  {extraction.describe()}")
@@ -246,6 +279,12 @@ def run_folder(job: Job, folder: Path) -> int:
                 continue
 
         if job.args.dry_run:
+            try:
+                job.skip_if_done(path)
+            except SkipDocument as reason:
+                log(f"  would skip: {reason}")
+                skipped += 1
+                continue
             _report_plan(job, path)
             processed += 1
             continue
@@ -253,6 +292,9 @@ def run_folder(job: Job, folder: Path) -> int:
         try:
             process_file(job, path, out_dir, to_stdout=False)
             processed += 1
+        except SkipDocument as reason:
+            log(f"  skipped: {reason}")
+            skipped += 1
         except (DocumentError, LMStudioError) as exc:
             log(f"  ERROR: {exc}")
             failed += 1
@@ -312,11 +354,23 @@ def zotero_extraction(job: Job, zot, key: str) -> Extraction:
     """Get an item's text, preferring the real PDF over the server index."""
     import zotero_source
 
-    attachment = zotero_source.find_pdf_attachment(zot, key)
+    try:
+        attachment = zotero_source.find_pdf_attachment(zot, key)
+    except zotero_source.ProcessingError:
+        # An item with no PDF — a book record, a web link, a note — is simply
+        # not something a text-layer run has any business with.
+        if job.text_layer_only:
+            raise SkipDocument("no PDF attachment") from None
+        raise
+
     path = zotero_source.local_pdf_path(attachment)
 
     if path is None:
-        # No local file: the indexed fulltext is the only option, and it has no
+        # Writing a text layer means writing a file, so an attachment that is
+        # not on this machine is a skip, not a fallback.
+        if job.text_layer_only:
+            raise SkipDocument("PDF is not stored on this machine")
+        # Otherwise the indexed fulltext is the only option, and it has no
         # page structure, so OCR is impossible on it.
         text = zotero_source.server_fulltext(zot, attachment["key"])
         if not text:
@@ -330,6 +384,7 @@ def zotero_extraction(job: Job, zot, key: str) -> Extraction:
                 "(no OCR possible)")
         return Extraction(text=text)
 
+    job.skip_if_done(path)
     log(f"  reading {path.name}")
     return job.extract(path)
 
@@ -401,20 +456,40 @@ def run_zotero_batch(job: Job, zot, papers: list[dict]) -> int:
         if args.dry_run:
             try:
                 attachment = zotero_source.find_pdf_attachment(zot, paper["key"])
-                path = zotero_source.local_pdf_path(attachment)
-                if path:
-                    _report_plan(job, path)
+            except zotero_source.ProcessingError as exc:
+                if job.text_layer_only:
+                    log("  would skip: no PDF attachment")
+                    skipped += 1
+                else:
+                    log(f"  would fail: {exc}")
+                    failed += 1
+                continue
+
+            path = zotero_source.local_pdf_path(attachment)
+            if path is None:
+                if job.text_layer_only:
+                    log("  would skip: PDF is not stored on this machine")
+                    skipped += 1
                 else:
                     log("  would use Zotero's indexed fulltext (no local PDF)")
-                processed += 1
-            except zotero_source.ProcessingError as exc:
-                log(f"  would fail: {exc}")
-                failed += 1
+                    processed += 1
+                continue
+            try:
+                job.skip_if_done(path)
+            except SkipDocument as reason:
+                log(f"  would skip: {reason}")
+                skipped += 1
+                continue
+            _report_plan(job, path)
+            processed += 1
             continue
 
         try:
             process_zotero_item(job, zot, paper["key"], paper["title"], args.force)
             processed += 1
+        except SkipDocument as reason:
+            log(f"  skipped: {reason}")
+            skipped += 1
         except Exception as exc:
             log(f"  ERROR: {exc}")
             failed += 1
@@ -467,6 +542,8 @@ def run_zotero(job: Job) -> int:
             return 0
         try:
             process_zotero_item(job, zot, key, title, args.force)
+        except SkipDocument as reason:
+            log(f"  skipped: {reason}")
         except (zotero_source.ProcessingError, DocumentError, LMStudioError) as exc:
             sys.exit(f"Error: {exc}")
         return 0
@@ -708,15 +785,18 @@ def main() -> None:
                 log(args.file.name)
                 _report_plan(job, args.file)
             else:
-                process_file(
-                    job,
-                    args.file,
-                    args.output_dir,
-                    # A lone summary with nowhere to write goes to stdout, as
-                    # the original doc summarizer did. A Markdown export is a
-                    # file by definition and always lands on disk.
-                    to_stdout=not (args.output or args.output_dir),
-                )
+                try:
+                    process_file(
+                        job,
+                        args.file,
+                        args.output_dir,
+                        # A lone summary with nowhere to write goes to stdout,
+                        # as the original doc summarizer did. A Markdown export
+                        # is a file by definition and always lands on disk.
+                        to_stdout=not (args.output or args.output_dir),
+                    )
+                except SkipDocument as reason:
+                    log(f"  skipped: {reason}")
             failures = 0
         elif args.folder:
             failures = run_folder(job, args.folder)

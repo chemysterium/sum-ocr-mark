@@ -177,12 +177,29 @@ python sumocr.py --zotero-all --zotero-local --action none --text-layer \
     --replace-pdf
 ```
 
-`--ocr auto` (the default) means only pages that actually lack a text layer
-are sent to the OCR model, so a library of mostly born-digital PDFs costs
-almost nothing to sweep — the already-searchable ones are opened, found to
-need nothing, and left alone. `--zotero-local` avoids needing an API key,
-and works here because the PDFs are edited on disk rather than through the
-read-only API.
+Such a run touches only what needs touching, and reports the rest as
+skipped rather than failed:
+
+| Case | What happens |
+| --- | --- |
+| Some pages lack a text layer | Only those pages are OCR-ed and written |
+| Every page already has text | Skipped before anything is read |
+| Item has no PDF attached | Skipped |
+| PDF is not synced to this machine | Skipped |
+
+```
+[53/58] The Speciation of Fe(Ii) and Fe(Iii) in Natural-Waters (FQ4CZU7L)
+  would skip: all 19 page(s) already have a text layer
+[55/58] Hardening Mechanisms by Hexamethylenetetramine ... (VTRTE4V5)
+  would skip: no PDF attachment
+Done. 2 would process, 56 skipped, 0 failed.
+```
+
+The already-searchable check reads page text only, and happens before the
+Markdown extraction pass, so skipping a 100-page PDF is near-instant and
+costs no model time. `--zotero-local` avoids needing an API key, and works
+here because the PDFs are edited on disk rather than through the read-only
+API.
 
 `--replace-pdf` overwrites the original, keeping it as `<name>.pdf.bak` and
 writing through a temporary file, so an interrupted run cannot leave a
