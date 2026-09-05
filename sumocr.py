@@ -77,6 +77,17 @@ def safe_stem(name: str, limit: int = 90) -> str:
     return (cleaned[:limit].rstrip() or "untitled")
 
 
+def zotero_stem(title: str, key: str) -> str:
+    """Filename stem for a Zotero item: a trimmed title plus its item key.
+
+    The key is appended after trimming, never before. Truncating
+    "<title> (KEY)" as one string drops the key off the end of any long
+    title — losing the one part that makes the name unique, so two papers
+    with a similar opening would overwrite each other.
+    """
+    return f"{safe_stem(title, limit=80)} ({key})"
+
+
 def markdown_path(stem: str, directory: Path, source: Path | None) -> Path:
     """Where the extracted-text export goes.
 
@@ -444,7 +455,7 @@ def process_zotero_item(job: Job, zot, key: str, title: str, replace: bool) -> N
     log(f"  {extraction.describe()}")
     job.write_text_layer(extraction, job.args.output_dir)
 
-    stem = safe_stem(f"{title} ({key})")
+    stem = zotero_stem(title, key)
     out_dir = job.args.output_dir or Path.cwd()
 
     if job.wants_markdown:

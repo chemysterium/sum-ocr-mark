@@ -139,6 +139,21 @@ def test_output_dir_mirrors_the_source_tree():
     ) == folder / "2023"
 
 
+def test_zotero_filenames_keep_the_item_key():
+    long_title = (
+        "Derivatization reactions for the determination of amines by gas "
+        "chromatography and their applications in environmental analysis"
+    )
+    stem = sumocr.zotero_stem(long_title, "BMYL7P5P")
+    # The key is what makes the name unique, so it must survive trimming.
+    assert stem.endswith("(BMYL7P5P)"), stem
+    assert len(stem) <= 95
+
+    # Two papers sharing a long opening must still get different names.
+    other = long_title[:-10] + "different ending entirely"
+    assert sumocr.zotero_stem(other, "ZZZZ1111") != stem
+
+
 def _text_layer_job(**overrides):
     """A Job configured for a text-layer-only run, with no LM Studio behind it."""
     import argparse
