@@ -1,0 +1,39 @@
+sum-ocr-mark
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This project continues two earlier projects by the same author, both
+licensed under the Apache License, Version 2.0:
+
+  - doc-ollama-summarizer
+    https://github.com/chemysterium/doc-ollama-summarizer
+
+  - zotero-ollama-summarizer
+    https://github.com/chemysterium/zotero-ollama-summarizer
+
+Code carried over from them lives in extract.py (the .docx walker),
+render.py (the LaTeX-to-Unicode conversion and Markdown list repair),
+summarize.py (the prompts, language handling and map-reduce structure) and
+zotero_source.py (item and collection resolution, note handling).
+
+All three projects were written by the author together with Claude Code.
+
+What changed here, relative to those two projects:
+
+  - The two tools were merged into one CLI with selectable sources: a file,
+    a folder, a Zotero item, a Zotero collection, or a whole Zotero library.
+  - The model backend was changed from Ollama to LM Studio. Ollama's
+    "think": false is replaced by LM Studio's reasoning_effort: "none", with
+    a fallback for builds that reject the parameter.
+  - Per-page OCR was added, using a vision model to read pages that have no
+    text layer, and stitching them back together with the pages that do.
+  - Markdown export was added as a first-class action that runs without any
+    summarization.
+  - Chunk sizes are now derived from the context length the model is actually
+    loaded with, read from LM Studio's API, rather than being a constant.
+  - Support was added for reading a Zotero library through Zotero's local,
+    read-only API instead of the web API.

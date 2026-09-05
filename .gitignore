@@ -1,0 +1,15 @@
+# Credentials — never commit these.
+config.ini
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Tool output, in case anyone runs it inside the repo.
+*.summary.md
+*.summary.txt
+*.summary.html
+*.extracted.md
