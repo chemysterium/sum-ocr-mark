@@ -86,6 +86,9 @@ python sumocr.py --zotero-collection "Thesis Reading" -r --max-minutes 60
 
 # The whole library — see what it would do first
 python sumocr.py --zotero-all --dry-run
+
+# Make every scanned PDF in the library searchable, nothing else
+python sumocr.py --zotero-all --zotero-local --action none \n    --text-layer --replace-pdf
 ```
 
 ### Sources
@@ -198,8 +201,27 @@ Done. 2 would process, 56 skipped, 0 failed.
 Zotero answers every request in about the same two seconds whatever it
 returns, so batch runs fetch all attachments in one paginated sweep rather
 than asking per item, and list items 500 at a time instead of pyzotero's
-default 25. On a 2800-item library that is the difference between a couple
-of minutes and about two hours.
+default 25. Asking per item would make the request count, not the data,
+decide the runtime.
+
+A real library of 2842 items, on a laptop:
+
+```
+Listing every paper in the library...
+Found 2842 papers in the library.
+Fetching the attachment list...
+  2045 PDF attachment(s) in 15s
+...
+Done. 93 would process, 2749 skipped, 0 failed.
+
+real    2m49s
+```
+
+Of the 2749 skipped, 1942 were already searchable, 797 had no PDF and 10
+were not synced locally. The 93 remaining files hold 5153 pages between
+them but need only **402** pages OCR-ed, because most are partly scanned —
+roughly 1.7 hours of model time, which `--max-minutes` can spread over
+several sessions.
 
 The already-searchable check reads page text only, and happens before the
 Markdown extraction pass, so skipping a 100-page PDF is near-instant and
@@ -274,6 +296,23 @@ OCR runs at roughly 5–15 s per page, so a long scan takes a while; the tool
 reports progress per page and elapsed time. `--max-minutes` bounds a Zotero
 batch — it stops *starting* new items, always letting the one in flight
 finish, and a rerun continues where it left off.
+
+### Choosing models and limits
+
+| Switch | Default | What it does |
+| --- | --- | --- |
+| `--model` | `google/gemma-4-26b-a4b-qat` | Model used for summaries |
+| `--ocr-model` | `deepseek-ocr-2` | Vision model used for OCR |
+| `--lmstudio-url` | `http://localhost:1234` | Where LM Studio is listening |
+| `--chunk-chars` | from the loaded context | Characters per chunk |
+| `--max-tokens` | `2048` | Cap on one summary response |
+| `--timeout` | `900` | Seconds to wait for one response |
+
+All three model settings can also live in `config.ini` (see
+`config.example.ini`) or in the environment as `CHAT_MODEL`, `OCR_MODEL`
+and `LMSTUDIO_URL`, so you need not repeat them on every run. Model names
+are checked before any work starts, and a wrong one fails immediately with
+the list of what LM Studio actually has loaded.
 
 ## Files
 

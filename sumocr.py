@@ -14,11 +14,16 @@ Pick what to produce with --action:
     summary                    an AI summary (the default)
     markdown                   the document's text as Markdown, no LLM
     both                       both files
+    none                       neither, for --text-layer-only runs
 
 And how to handle scanned pages with --ocr:
     auto                       OCR only pages with no text layer (the default)
     force                      OCR every page, ignoring any text layer
     never                      text layer only
+
+--text-layer additionally writes the OCR-ed words back into the PDF as
+invisible text, so a scan becomes searchable; --replace-pdf does that to
+the original file rather than to a copy.
 
 Examples:
     python sumocr.py --file report.pdf
@@ -26,6 +31,7 @@ Examples:
     python sumocr.py --folder ./papers --style paper --action both
     python sumocr.py --zotero-collection "Thesis Reading" --max-minutes 60
     python sumocr.py --zotero-all --dry-run
+    python sumocr.py --zotero-all --action none --text-layer --replace-pdf
 
 Progress goes to stderr, so "sumocr.py --file in.pdf > out.md" captures only
 the summary.
