@@ -107,7 +107,47 @@ class Job:
             ocr_prompt=self.ocr_prompt,
             dpi=self.args.ocr_dpi,
             min_page_chars=self.args.min_page_chars,
+            want_boxes=self.args.text_layer,
         )
+
+    def write_text_layer(self, extraction: Extraction, directory: Path | None) -> None:
+        """Save a searchable copy of the PDF the OCR text came from."""
+        import textlayer
+
+        source = extraction.source
+        if not self.args.text_layer or source is None:
+            return
+        if source.suffix.lower() != ".pdf":
+            return
+        if not extraction.ocr_blocks:
+            if extraction.used_ocr:
+                log("  no positioned OCR output, skipping the text layer")
+            else:
+                log("  no pages needed OCR, so the PDF already has a text layer")
+            return
+
+        target = source if self.args.replace_pdf else (
+            (directory or source.parent) / f"{source.stem}.ocr.pdf"
+        )
+        if self.args.replace_pdf:
+            # Never overwrite the only copy: keep the original next to it, and
+            # write through a temporary file so an interrupted save cannot
+            # leave a truncated PDF where the attachment used to be.
+            backup = source.with_suffix(source.suffix + ".bak")
+            if not backup.exists():
+                backup.write_bytes(source.read_bytes())
+                log(f"  kept the original as {backup.name}")
+            staged = source.with_suffix(".ocr-tmp.pdf")
+            pages = textlayer.write_text_layer(
+                source, staged, extraction.ocr_blocks, self.args.min_page_chars
+            )
+            staged.replace(source)
+        else:
+            pages = textlayer.write_text_layer(
+                source, target, extraction.ocr_blocks, self.args.min_page_chars
+            )
+
+        log(f"  added a text layer to {pages} page(s) -> {target}")
 
     def summarize(self, extraction: Extraction, style: str) -> str:
         log(
@@ -135,6 +175,7 @@ def process_file(job: Job, path: Path, directory: Path | None, to_stdout: bool) 
     log(f"Extracting {path.name}...")
     extraction = job.extract(path)
     log(f"  {extraction.describe()}")
+    job.write_text_layer(extraction, directory)
 
     out_dir = directory or path.parent
     stem = job.args.output.stem if job.args.output else path.stem
@@ -288,6 +329,7 @@ def process_zotero_item(job: Job, zot, key: str, title: str, replace: bool) -> N
 
     extraction = zotero_extraction(job, zot, key)
     log(f"  {extraction.describe()}")
+    job.write_text_layer(extraction, job.args.output_dir)
 
     stem = safe_stem(f"{title} ({key})")
     out_dir = job.args.output_dir or Path.cwd()
@@ -505,6 +547,19 @@ def build_parser() -> argparse.ArgumentParser:
         "slower, needs more cleanup",
     )
     ocr.add_argument(
+        "--text-layer", action="store_true",
+        help="Write the OCR-ed text back into the PDF as an invisible text layer, "
+        "so the scan becomes searchable and Zotero can index it. Saves a copy as "
+        "<name>.ocr.pdf; forces the grounding OCR prompt, which supplies the "
+        "positions",
+    )
+    ocr.add_argument(
+        "--replace-pdf", action="store_true",
+        help="With --text-layer, overwrite the original PDF in place instead of "
+        "writing a copy — for Zotero this makes the attachment itself searchable. "
+        "The original is kept alongside as <name>.pdf.bak",
+    )
+    ocr.add_argument(
         "--min-page-chars", type=int, default=extract.MIN_PAGE_CHARS, metavar="N",
         help=f"A page with fewer than N characters counts as having no text layer "
         f"(default: {extract.MIN_PAGE_CHARS})",
@@ -600,6 +655,10 @@ def validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             "Zotero's local API is read-only, so --zotero-local cannot save notes: "
             "add --no-note (and --output-dir) to write summaries to files instead"
         )
+    if args.replace_pdf and not args.text_layer:
+        parser.error("--replace-pdf only makes sense with --text-layer")
+    if args.text_layer and args.ocr == "never":
+        parser.error("--text-layer needs OCR; drop --ocr never")
     if args.max_minutes is not None and args.max_minutes <= 0:
         parser.error("--max-minutes must be greater than 0")
     if args.ocr_dpi < 72:

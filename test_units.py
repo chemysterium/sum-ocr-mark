@@ -9,6 +9,7 @@ import extract
 import render
 import sumocr
 import summarize
+import textlayer
 
 
 def test_ocr_cleanup_strips_grounding_scaffolding():
@@ -82,6 +83,42 @@ def test_markdown_export_never_overwrites_its_source():
     assert sumocr.markdown_path("notes", directory, directory / "notes.pdf").name == (
         "notes.md"
     )
+
+
+def test_grounding_blocks_are_parsed_with_boxes():
+    raw = (
+        "sub_title[[115, 96, 252, 122]]\n"
+        "## Methods\n\n"
+        "text[[114, 151, 642, 191]]\n"
+        "Samples were digested at 120 degC.\n"
+    )
+    blocks = textlayer.parse_grounding(raw)
+    assert len(blocks) == 2
+    assert blocks[0].bbox == (115, 96, 252, 122)
+    assert blocks[0].text == "## Methods"
+    assert blocks[1].bbox == (114, 151, 642, 191)
+    assert "digested" in blocks[1].text
+
+
+def test_grounding_falls_back_when_there_are_no_boxes():
+    # The plain "Free OCR." prompt returns no coordinates at all.
+    blocks = textlayer.parse_grounding("Just some text.\nOn two lines.")
+    assert len(blocks) == 1
+    assert blocks[0].bbox is None
+    assert textlayer.parse_grounding("   ") == []
+
+
+def test_grounding_boxes_are_normalised():
+    # Reversed corners must come back as a well-formed rectangle.
+    blocks = textlayer.parse_grounding("text[[300, 400, 100, 200]]\nhello")
+    assert blocks[0].bbox == (100, 200, 300, 400)
+
+
+def test_text_layer_strips_markdown_decoration():
+    assert textlayer._plain("## Heading") == "Heading"
+    assert textlayer._plain("**bold** text") == "bold text"
+    assert textlayer._plain("- a bullet") == "a bullet"
+    assert "₃" in textlayer._plain(r"HF-HNO \( _{3} \)")
 
 
 if __name__ == "__main__":

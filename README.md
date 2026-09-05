@@ -27,6 +27,10 @@ Two models do the work, both served by the same LM Studio instance:
   are rendered and sent to the OCR model, and the two are stitched back
   together in page order. Partly-scanned PDFs — a digital paper with a
   photographed appendix — come out whole.
+- **Scans become searchable.** `--text-layer` writes the OCR-ed words back
+  into the PDF as invisible, positioned text, so Zotero can index a scan and
+  you can search it in a reader. `--replace-pdf` does it to the attachment
+  in place, keeping a backup.
 - **Markdown export without an LLM.** `--action markdown` runs extraction and
   OCR only, so you can get a clean `.md` of a scanned document without
   summarizing it.
@@ -144,6 +148,43 @@ better.
 `--ocr-prompt markdown` is layout-aware but emits bounding-box lines and
 LaTeX-wrapped subscripts, which are stripped afterwards.
 
+### Making the PDF itself searchable
+
+By default OCR is only used to *read* a scan — the PDF is left alone.
+`--text-layer` writes the OCR-ed words back into the file as invisible text,
+positioned over the pixels they came from, so the scan becomes searchable and
+Zotero can index it. The page still looks exactly the same.
+
+```bash
+# Write a searchable copy next to the original, as <name>.ocr.pdf
+python sumocr.py --file scan.pdf --text-layer
+
+# Make the Zotero attachment itself searchable, in place
+python sumocr.py --zotero-item ABCD1234 --text-layer --replace-pdf
+```
+
+`--replace-pdf` overwrites the original, keeping it as `<name>.pdf.bak` and
+writing through a temporary file, so an interrupted run cannot leave a
+truncated PDF where your attachment used to be. After replacing a Zotero
+attachment, right-click the item and choose **Reindex Item** so Zotero picks
+up the new text.
+
+Pages that already have a real text layer are never touched, even under
+`--ocr force`, so a page can't end up holding its own words twice.
+
+Two details worth knowing:
+
+- `--text-layer` forces the grounding OCR prompt, since that is what returns
+  the per-block coordinates. Positions are block-level, so selecting text is
+  approximate even though searching is exact.
+- The font is chosen by round-trip test, not by name. PDFs record which glyph
+  to draw plus a separate table saying what each glyph means, and PyMuPDF
+  builds that table by reverse-mapping glyphs — with most fonts a plain
+  hyphen comes back as U+2010 and a space as U+00A0, which silently breaks
+  search for `AG50W-X12` or any phrase. The tool writes a probe string with
+  each candidate font and reads it back, using the first that survives
+  unchanged.
+
 `--dry-run` reports exactly which pages would be OCR-ed, without calling a
 model:
 
@@ -199,6 +240,7 @@ finish, and a rerun continues where it left off.
 | `extract.py` | Per-page text-layer detection, extraction, OCR stitching |
 | `summarize.py` | Prompts, language handling, map-reduce |
 | `render.py` | LaTeX→Unicode, Markdown/HTML/text output |
+| `textlayer.py` | Invisible text layers: box parsing, font choice, writing |
 | `zotero_source.py` | Zotero items, collections, attachments, notes |
 | `config.py` | `config.ini` and environment settings |
 | `test_units.py` | Checks for the pure functions — no network, no models |

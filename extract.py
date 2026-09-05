@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lmstudio import LMStudio, OCR_PROMPT_FREE, log
+from lmstudio import LMStudio, OCR_PROMPT_FREE, OCR_PROMPT_MARKDOWN, log
 
 # A page with less than this much text is treated as having no usable text
 # layer. Scanned pages usually yield 0 characters, but a scan can carry a
@@ -46,6 +46,9 @@ class Extraction:
     total_pages: int = 0
     ocr_pages: list[int] = field(default_factory=list)  # 1-based
     source: Path | None = None
+    # Positioned OCR output per 1-based page, kept only when a text layer was
+    # asked for — see textlayer.write_text_layer().
+    ocr_blocks: dict[int, list] = field(default_factory=dict)
 
     @property
     def used_ocr(self) -> bool:
@@ -132,6 +135,7 @@ def extract_pdf(
     ocr_prompt: str = OCR_PROMPT_FREE,
     dpi: int = 200,
     min_page_chars: int = MIN_PAGE_CHARS,
+    want_boxes: bool = False,
 ) -> Extraction:
     """PDF text as Markdown, OCR-ing pages according to `ocr_mode`.
 
@@ -139,9 +143,18 @@ def extract_pdf(
       never  — text layer only; a scanned page contributes nothing
       auto   — OCR only the pages whose text layer is missing or too thin
       force  — OCR every page, ignoring the text layer entirely
+
+    want_boxes forces the grounding prompt, whose per-block coordinates are
+    what a text layer needs, and keeps the parsed blocks on the result. One
+    OCR pass then serves both the summary and the searchable PDF.
     """
     import pymupdf
     import pymupdf4llm
+
+    import textlayer
+
+    if want_boxes:
+        ocr_prompt = OCR_PROMPT_MARKDOWN
 
     with pymupdf.open(str(path)) as doc:
         total = doc.page_count
@@ -168,6 +181,7 @@ def extract_pdf(
         # returns one entry per requested page, in the order requested, which
         # is what lets the two sources be interleaved below.
         rendered: dict[int, str] = {}
+        ocr_blocks: dict[int, list] = {}
         if text_pages:
             chunks = pymupdf4llm.to_markdown(
                 doc,
@@ -192,6 +206,10 @@ def extract_pdf(
                     log(f"    page {number}: OCR failed ({exc})")
                     rendered[number] = ""
                     continue
+                if want_boxes:
+                    blocks = textlayer.parse_grounding(raw)
+                    if blocks:
+                        ocr_blocks[number] = blocks
                 rendered[number] = clean_ocr_text(raw)
                 elapsed = time.monotonic() - started
                 log(
@@ -202,7 +220,7 @@ def extract_pdf(
     body = "\n\n".join(rendered[n] for n in range(1, total + 1) if rendered.get(n))
     extraction = Extraction(
         text=body, total_pages=total, ocr_pages=[n for n in ocr_pages if rendered.get(n)],
-        source=path,
+        source=path, ocr_blocks=ocr_blocks,
     )
 
     if len(body.strip()) < MIN_USEFUL_CHARS:
@@ -310,6 +328,7 @@ def extract(
     ocr_prompt: str = OCR_PROMPT_FREE,
     dpi: int = 200,
     min_page_chars: int = MIN_PAGE_CHARS,
+    want_boxes: bool = False,
 ) -> Extraction:
     """Extract any supported document, OCR-ing as `ocr_mode` directs."""
     if not path.exists():
@@ -326,7 +345,8 @@ def extract(
 
     if suffix == ".pdf":
         result = extract_pdf(
-            path, client, ocr_mode, ocr_model, ocr_prompt, dpi, min_page_chars
+            path, client, ocr_mode, ocr_model, ocr_prompt, dpi, min_page_chars,
+            want_boxes,
         )
     elif suffix in IMAGE_SUFFIXES:
         result = extract_image(path, client, ocr_model, ocr_prompt)
