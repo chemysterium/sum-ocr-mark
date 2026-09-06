@@ -91,6 +91,10 @@ MIN_BOX_SIZE = 2.0
 # must not be added on top of it. Kept in step with extract.MIN_PAGE_CHARS.
 MIN_EXISTING_CHARS = 80
 
+# Growth beyond this counts as a page having gained a text layer. Above
+# zero because re-saving a PDF can shift a character or two on its own.
+MIN_GAINED_CHARS = 5
+
 _BLOCK_HEADER = re.compile(
     r"^[ \t]*([a-z_]+)\[\[([\d\s,]+)\]\][ \t]*$", re.MULTILINE
 )
@@ -408,15 +412,11 @@ def tesseract_languages() -> list[str]:
     ]
 
 
-def _pages_with_text(path: Path, min_chars: int) -> set[int]:
+def _page_text_lengths(path: Path) -> list[int]:
     import pymupdf
 
     with pymupdf.open(str(path)) as doc:
-        return {
-            i + 1
-            for i, page in enumerate(doc)
-            if len(page.get_text("text").strip()) >= min_chars
-        }
+        return [len(page.get_text("text").strip()) for page in doc]
 
 
 def add_text_layer_with_tesseract(
@@ -424,7 +424,6 @@ def add_text_layer_with_tesseract(
     target: Path,
     ocr_mode: str = "auto",
     language: str = "eng",
-    min_existing_chars: int = MIN_EXISTING_CHARS,
     rotate: bool = False,
     deskew: bool = False,
 ) -> int:
@@ -434,6 +433,11 @@ def add_text_layer_with_tesseract(
     running Tesseract, and writing the recognised words back at their true
     positions with the right size — so this only maps our OCR modes onto its
     options and reports how many pages gained text.
+
+    Which pages to leave alone is ocrmypdf's own judgement, not this
+    tool's MIN_EXISTING_CHARS: skip_text keeps any page that already draws
+    text. The two agree in practice — a scan carrying only a library stamp
+    is still re-read — and no page can end up with its words twice.
     """
     if find_tesseract() is None:
         raise TesseractUnavailable(
@@ -451,7 +455,7 @@ def add_text_layer_with_tesseract(
             "(it also needs Ghostscript), or use --text-layer-engine deepseek."
         ) from None
 
-    before = _pages_with_text(source, min_existing_chars)
+    before = _page_text_lengths(source)
 
     # --skip-text leaves pages that already carry text exactly as they are,
     # which is the same rule the rest of the tool follows; --force-ocr
@@ -485,5 +489,13 @@ def add_text_layer_with_tesseract(
     finally:
         sys.stdout, sys.stderr = saved_stdout, saved_stderr
 
-    after = _pages_with_text(target, min_existing_chars)
-    return len(after - before)
+    # Count pages that actually gained words, rather than pages that crossed
+    # some threshold: a sparse page going from nothing to a few dozen
+    # characters has still been made searchable, and reporting it as untouched
+    # would understate what the run did.
+    after = _page_text_lengths(target)
+    return sum(
+        1
+        for old_len, new_len in zip(before, after)
+        if new_len > old_len + MIN_GAINED_CHARS
+    )

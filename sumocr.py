@@ -208,8 +208,7 @@ class Job:
         def produce(destination: Path) -> int:
             if self.tesseract_layer:
                 return textlayer.add_text_layer_with_tesseract(
-                    path, destination, self.args.ocr, self.args.ocr_lang,
-                    self.args.min_page_chars,
+                    path, destination, self.args.ocr, self.args.ocr_lang
                 )
             if extraction is None or not extraction.ocr_blocks:
                 return 0
