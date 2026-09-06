@@ -34,6 +34,46 @@ class ProcessingError(Exception):
     """A per-item failure that should not abort a whole collection run."""
 
 
+class ZoteroUnreachable(Exception):
+    """Zotero is not answering — almost always because it is not running."""
+
+
+def unreachable(local: bool) -> ZoteroUnreachable:
+    """The message to show when Zotero refuses the connection."""
+    if local:
+        return ZoteroUnreachable(
+            "Cannot reach Zotero's local API at http://localhost:23119.\n"
+            "Zotero itself must be running for --zotero-local: open it, and check\n"
+            "Settings -> Advanced -> 'Allow other applications on this computer to\n"
+            "communicate with Zotero'. Closing its PDF reader tabs is a good idea\n"
+            "before a --replace-pdf run, but the application has to stay open."
+        )
+    return ZoteroUnreachable(
+        "Cannot reach the Zotero web API. Check your network connection, or use\n"
+        "--zotero-local to read the library from a running Zotero instead."
+    )
+
+
+def probe(local: bool) -> None:
+    """Fail fast, and legibly, when Zotero is not there to answer.
+
+    Without this the first API call raises an httpx ConnectError, which
+    reaches the user as sixty lines of traceback ending in a localised
+    WinError rather than "start Zotero".
+    """
+    if not local:
+        return
+    import httpx
+
+    try:
+        httpx.get(
+            "http://localhost:23119/api/users/0/items",
+            params={"limit": 1}, timeout=10,
+        )
+    except httpx.HTTPError:
+        raise unreachable(True) from None
+
+
 def build_client(local: bool = False) -> zotero.Zotero:
     """A pyzotero client for the web API, or for Zotero's own local API.
 
@@ -43,6 +83,7 @@ def build_client(local: bool = False) -> zotero.Zotero:
     --no-note. Zotero must be running for it to answer.
     """
     if local:
+        probe(True)
         return zotero.Zotero(
             config.ZOTERO_LIBRARY_ID or "0", config.ZOTERO_LIBRARY_TYPE, local=True
         )

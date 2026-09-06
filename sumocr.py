@@ -624,6 +624,22 @@ def run_zotero_batch(job: Job, zot, papers: list[dict]) -> int:
 
 
 def run_zotero(job: Job) -> int:
+    import httpx
+
+    import zotero_source
+
+    args = job.args
+    try:
+        return _run_zotero(job)
+    except zotero_source.ZoteroUnreachable as exc:
+        raise DocumentError(str(exc)) from None
+    except httpx.HTTPError:
+        # Zotero can also go away mid-run — closed while a long sweep is
+        # working through a big file — and that should read the same way.
+        raise DocumentError(str(zotero_source.unreachable(args.zotero_local))) from None
+
+
+def _run_zotero(job: Job) -> int:
     import zotero_source
 
     args = job.args
