@@ -34,7 +34,10 @@ What changed here, relative to those two projects:
   - Markdown export was added as a first-class action that runs without any
     summarization.
   - OCR-ed text can be written back into the PDF as an invisible text
-    layer, making scanned attachments searchable and indexable.
+    layer, making scanned attachments searchable and indexable. Tesseract
+    writes that layer, because it reports per-word positions, while the
+    vision model supplies the Markdown and the text summaries are built
+    from.
   - Chunk sizes are now derived from the context length the model is actually
     loaded with, read from LM Studio's API, rather than being a constant.
   - Support was added for reading a Zotero library through Zotero's local,

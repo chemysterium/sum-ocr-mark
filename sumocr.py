@@ -130,6 +130,13 @@ class Job:
         self.text_layer_only = (
             args.text_layer and not self.wants_summary and not self.wants_markdown
         )
+        self.tesseract_layer = (
+            args.text_layer and args.text_layer_engine == "tesseract"
+        )
+        # With Tesseract writing the layer, nothing needs DeepSeek's block
+        # coordinates, so the plain prompt — which reads better — is used
+        # for the Markdown and summaries.
+        self.needs_lmstudio = self.wants_summary or self.wants_markdown
         # Set by a batch run to every item's PDF attachment, fetched in one
         # sweep — see pdf_attachment().
         self.attachments: dict[str, dict] | None = None
@@ -176,48 +183,67 @@ class Job:
             ocr_prompt=self.ocr_prompt,
             dpi=self.args.ocr_dpi,
             min_page_chars=self.args.min_page_chars,
-            want_boxes=self.args.text_layer,
+            want_boxes=self.args.text_layer and not self.tesseract_layer,
             need_text=not self.text_layer_only,
         )
 
-    def write_text_layer(self, extraction: Extraction, directory: Path | None) -> None:
-        """Save a searchable copy of the PDF the OCR text came from."""
+    def write_text_layer(
+        self, path: Path, extraction: Extraction | None, directory: Path | None
+    ) -> None:
+        """Make `path` searchable, with whichever engine was chosen.
+
+        Tesseract is asked for the whole PDF and places every word itself.
+        DeepSeek can only supply block positions, so that path needs the
+        extraction its OCR pass produced.
+        """
         import textlayer
 
-        source = extraction.source
-        if not self.args.text_layer or source is None:
+        if not self.args.text_layer or path.suffix.lower() != ".pdf":
             return
-        if source.suffix.lower() != ".pdf":
-            return
-        if not extraction.ocr_blocks:
-            if extraction.used_ocr:
+
+        target = path if self.args.replace_pdf else (
+            (directory or path.parent) / f"{path.stem}.ocr.pdf"
+        )
+
+        def produce(destination: Path) -> int:
+            if self.tesseract_layer:
+                return textlayer.add_text_layer_with_tesseract(
+                    path, destination, self.args.ocr, self.args.ocr_lang,
+                    self.args.min_page_chars,
+                )
+            if extraction is None or not extraction.ocr_blocks:
+                return 0
+            return textlayer.write_text_layer(
+                path, destination, extraction.ocr_blocks, self.args.min_page_chars
+            )
+
+        if not self.tesseract_layer and (extraction is None or not extraction.ocr_blocks):
+            if extraction is not None and extraction.used_ocr:
                 log("  no positioned OCR output, skipping the text layer")
             else:
                 log("  no pages needed OCR, so the PDF already has a text layer")
             return
 
-        target = source if self.args.replace_pdf else (
-            (directory or source.parent) / f"{source.stem}.ocr.pdf"
-        )
         if self.args.replace_pdf:
             # Never overwrite the only copy: keep the original next to it, and
             # write through a temporary file so an interrupted save cannot
             # leave a truncated PDF where the attachment used to be.
-            backup = source.with_suffix(source.suffix + ".bak")
+            backup = path.with_suffix(path.suffix + ".bak")
             if not backup.exists():
-                backup.write_bytes(source.read_bytes())
+                backup.write_bytes(path.read_bytes())
                 log(f"  kept the original as {backup.name}")
-            staged = source.with_suffix(".ocr-tmp.pdf")
-            pages = textlayer.write_text_layer(
-                source, staged, extraction.ocr_blocks, self.args.min_page_chars
-            )
-            staged.replace(source)
+            staged = path.with_suffix(".ocr-tmp.pdf")
+            try:
+                pages = produce(staged)
+                staged.replace(path)
+            finally:
+                if staged.exists():
+                    staged.unlink()
         else:
-            pages = textlayer.write_text_layer(
-                source, target, extraction.ocr_blocks, self.args.min_page_chars
-            )
+            pages = produce(target)
 
-        log(f"  added a text layer to {pages} page(s) -> {target}")
+        engine = "tesseract" if self.tesseract_layer else "deepseek"
+        log(f"  added a text layer to {pages} page(s) with {engine} -> {target}")
 
     def summarize(self, extraction: Extraction, style: str) -> str:
         log(
@@ -243,10 +269,16 @@ class Job:
 def process_file(job: Job, path: Path, directory: Path | None, to_stdout: bool) -> None:
     """Extract one file and write whichever outputs were asked for."""
     job.skip_if_done(path)
-    log(f"Extracting {path.name}...")
-    extraction = job.extract(path)
-    log(f"  {extraction.describe()}")
-    job.write_text_layer(extraction, directory)
+
+    # A Tesseract-only run never needs the model to read the document.
+    extraction = None
+    if not (job.text_layer_only and job.tesseract_layer):
+        log(f"Extracting {path.name}...")
+        extraction = job.extract(path)
+        log(f"  {extraction.describe()}")
+    job.write_text_layer(path, extraction, directory)
+    if extraction is None:
+        return
 
     out_dir = directory or path.parent
     stem = job.args.output.stem if job.args.output else path.stem
@@ -405,8 +437,12 @@ def _report_plan(job: Job, path: Path) -> None:
 # Zotero sources
 # --------------------------------------------------------------------------
 
-def zotero_extraction(job: Job, zot, key: str) -> Extraction:
-    """Get an item's text, preferring the real PDF over the server index."""
+def zotero_pdf_path(job: Job, zot, key: str) -> Path | None:
+    """The item's PDF on this machine, or None if only the server index exists.
+
+    Raises SkipDocument for the cases a text-layer run has no business with:
+    an item with no PDF, or one whose file is not synced here.
+    """
     import zotero_source
 
     try:
@@ -419,29 +455,37 @@ def zotero_extraction(job: Job, zot, key: str) -> Extraction:
         raise
 
     path = zotero_source.local_pdf_path(attachment)
-
     if path is None:
         # Writing a text layer means writing a file, so an attachment that is
         # not on this machine is a skip, not a fallback.
         if job.text_layer_only:
             raise SkipDocument("PDF is not stored on this machine")
-        # Otherwise the indexed fulltext is the only option, and it has no
-        # page structure, so OCR is impossible on it.
-        text = zotero_source.server_fulltext(zot, attachment["key"])
-        if not text:
-            raise zotero_source.ProcessingError(
-                f"No local PDF for attachment {attachment['key']} and no indexed "
-                f"fulltext on the server. Sync the file, or set zotero_storage_dir "
-                f"(currently {config.ZOTERO_STORAGE_DIR})."
-            )
-        if job.args.ocr != "never":
-            log("  warning: PDF not available locally, using Zotero's indexed text "
-                "(no OCR possible)")
-        return Extraction(text=text)
+        return None
 
     job.skip_if_done(path)
-    log(f"  reading {path.name}")
-    return job.extract(path)
+    return path
+
+
+def zotero_server_extraction(job: Job, zot, key: str) -> Extraction:
+    """Zotero's own indexed text, for items whose PDF is not on this machine.
+
+    It has no page structure, so OCR and text layers are both impossible on
+    it; it is only ever enough to summarize from.
+    """
+    import zotero_source
+
+    attachment = job.pdf_attachment(zot, key)
+    text = zotero_source.server_fulltext(zot, attachment["key"])
+    if not text:
+        raise zotero_source.ProcessingError(
+            f"No local PDF for attachment {attachment['key']} and no indexed "
+            f"fulltext on the server. Sync the file, or set zotero_storage_dir "
+            f"(currently {config.ZOTERO_STORAGE_DIR})."
+        )
+    if job.args.ocr != "never":
+        log("  warning: PDF not available locally, using Zotero's indexed text "
+            "(no OCR possible)")
+    return Extraction(text=text)
 
 
 def process_zotero_item(job: Job, zot, key: str, title: str, replace: bool) -> None:
@@ -451,9 +495,22 @@ def process_zotero_item(job: Job, zot, key: str, title: str, replace: bool) -> N
     # summary is saved, so a failed run never loses an existing summary.
     old_notes = zotero_source.find_summary_notes(zot, key) if replace else []
 
-    extraction = zotero_extraction(job, zot, key)
-    log(f"  {extraction.describe()}")
-    job.write_text_layer(extraction, job.args.output_dir)
+    path = zotero_pdf_path(job, zot, key)
+
+    extraction = None
+    if path is None:
+        extraction = zotero_server_extraction(job, zot, key)
+        log(f"  {extraction.describe()}")
+    elif not (job.text_layer_only and job.tesseract_layer):
+        # A Tesseract-only run never needs the model to read the document.
+        log(f"  reading {path.name}")
+        extraction = job.extract(path)
+        log(f"  {extraction.describe()}")
+
+    if path is not None:
+        job.write_text_layer(path, extraction, job.args.output_dir)
+    if extraction is None:
+        return
 
     stem = zotero_stem(title, key)
     out_dir = job.args.output_dir or Path.cwd()
@@ -712,6 +769,18 @@ def build_parser() -> argparse.ArgumentParser:
         "positions",
     )
     ocr.add_argument(
+        "--text-layer-engine", choices=["tesseract", "deepseek"], default="tesseract",
+        help="Which OCR engine writes the text layer. tesseract (default) places "
+        "each word at its true position, so selecting and highlighting work. "
+        "deepseek only knows block positions and drifts, but needs no local "
+        "install. Summaries and Markdown always come from the LM Studio model",
+    )
+    ocr.add_argument(
+        "--ocr-lang", default="eng", metavar="LANG",
+        help="Tesseract language(s) for the text layer, joined with + "
+        "(e.g. ces, eng+ces). Default: eng",
+    )
+    ocr.add_argument(
         "--replace-pdf", action="store_true",
         help="With --text-layer, overwrite the original PDF in place instead of "
         "writing a copy — for Zotero this makes the attachment itself searchable. "
@@ -837,14 +906,27 @@ def main() -> None:
     needs_summary = args.action in ("summary", "both")
 
     try:
-        if not args.dry_run:
-            # Fail on a wrong model name now, not after an hour of OCR.
-            if needs_summary:
-                client.check_model(args.model, "summary")
-            if args.ocr != "never":
-                client.check_model(args.ocr_model, "OCR")
-
         job = Job(args, client)
+
+        if not args.dry_run:
+            # Fail on a wrong model name now, not after an hour of OCR — but
+            # only for the models this run will actually use. A Tesseract-only
+            # text-layer run never touches LM Studio at all.
+            if job.wants_summary:
+                client.check_model(args.model, "summary")
+            if job.needs_lmstudio and args.ocr != "never":
+                client.check_model(args.ocr_model, "OCR")
+            if job.tesseract_layer:
+                import textlayer
+
+                if textlayer.find_tesseract() is None:
+                    raise DocumentError(
+                        "--text-layer-engine tesseract needs Tesseract installed.\n"
+                        "Windows: https://github.com/UB-Mannheim/tesseract/wiki\n"
+                        "Debian/Ubuntu: apt install tesseract-ocr\n"
+                        "macOS: brew install tesseract\n"
+                        "Or pass --text-layer-engine deepseek."
+                    )
 
         if args.file:
             if args.dry_run:

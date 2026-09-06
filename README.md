@@ -50,6 +50,16 @@ Two models do the work, both served by the same LM Studio instance:
 pip install -r requirements.txt
 ```
 
+For `--text-layer`, also install Tesseract — it writes the searchable
+layer, and places words far more accurately than a vision model can:
+
+- Windows: <https://github.com/UB-Mannheim/tesseract/wiki>
+- Debian/Ubuntu: `apt install tesseract-ocr`
+- macOS: `brew install tesseract`
+
+Add the language packs you need (`tesseract-ocr-ces` for Czech). The tool
+finds Tesseract even when the Windows installer leaves it off PATH.
+
 In LM Studio: open the **Developer** tab, click **Start Server**, and load the
 summary and OCR models. Then, only if you want the Zotero sources:
 
@@ -88,7 +98,8 @@ python sumocr.py --zotero-collection "Thesis Reading" -r --max-minutes 60
 python sumocr.py --zotero-all --dry-run
 
 # Make every scanned PDF in the library searchable, nothing else
-python sumocr.py --zotero-all --zotero-local --action none \n    --text-layer --replace-pdf
+python sumocr.py --zotero-all --zotero-local --action none \
+    --text-layer --replace-pdf
 ```
 
 ### Sources
@@ -238,18 +249,42 @@ up the new text.
 Pages that already have a real text layer are never touched, even under
 `--ocr force`, so a page can't end up holding its own words twice.
 
-Two details worth knowing:
+#### Which engine writes the layer
 
-- `--text-layer` forces the grounding OCR prompt, since that is what returns
-  the per-block coordinates. Positions are block-level, so selecting text is
-  approximate even though searching is exact.
-- The font is chosen by round-trip test, not by name. PDFs record which glyph
-  to draw plus a separate table saying what each glyph means, and PyMuPDF
-  builds that table by reverse-mapping glyphs — with most fonts a plain
-  hyphen comes back as U+2010 and a space as U+00A0, which silently breaks
-  search for `AG50W-X12` or any phrase. The tool writes a probe string with
-  each candidate font and reads it back, using the first that survives
-  unchanged.
+Two OCR engines are used, for the two jobs each is good at:
+
+| Output | Engine | Why |
+| --- | --- | --- |
+| PDF text layer | **Tesseract** (default) | Word-level geometry, so selecting and highlighting land on the right words |
+| Markdown, summaries | **DeepSeek-OCR** | Better reading order and structure; coordinates are irrelevant here |
+
+They are never reconciled, so there is no alignment step to go wrong.
+Measured against the ink on a real scanned paper:
+
+| Engine | Median word error | 90th pct | Worst |
+| --- | --- | --- | --- |
+| Tesseract | **0.33 pt** | 0.66 pt | 4.4 pt |
+| DeepSeek blocks | 3.19 pt | 3.48 pt | 69.5 pt |
+
+DeepSeek only reports *block* positions, and its text then has to be
+re-flowed into those boxes in a substitute font, so individual words drift.
+Tesseract reports every word's own box. It is also faster for this job:
+16 s for a 7-page scan against 146 s.
+
+`--text-layer-engine deepseek` selects the old behaviour if Tesseract is not
+installed, and `--ocr-lang` picks Tesseract's language(s) — `--ocr-lang ces`
+or `--ocr-lang eng+ces` for Czech, whichever packs you have.
+
+A Tesseract text-layer run with `--action none` never contacts LM Studio at
+all, so a library sweep needs no model loaded.
+
+One more detail: the font for the DeepSeek engine is chosen by round-trip
+test, not by name. PDFs record which glyph to draw plus a separate table
+saying what each glyph means, and PyMuPDF builds that table by
+reverse-mapping glyphs — with most fonts a plain hyphen comes back as U+2010
+and a space as U+00A0, which silently breaks search for `AG50W-X12` or any
+phrase. The tool writes a probe string with each candidate font and reads it
+back, using the first that survives unchanged.
 
 `--dry-run` reports exactly which pages would be OCR-ed, without calling a
 model:

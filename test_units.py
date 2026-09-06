@@ -161,6 +161,7 @@ def _text_layer_job(**overrides):
     args = argparse.Namespace(
         action="none", text_layer=True, replace_pdf=False, ocr="auto",
         min_page_chars=80, language="auto", ocr_prompt="free", chunk_chars=None,
+        text_layer_engine="tesseract", ocr_lang="eng",
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -207,6 +208,50 @@ def test_text_layer_run_skips_pdfs_that_are_already_searchable():
 
         # A run that also wants a summary must not skip on these grounds.
         _text_layer_job(action="summary").skip_if_done(done)
+
+
+def test_tesseract_run_leaves_stdout_and_stderr_usable():
+    """ocrmypdf swaps both streams for StringIO and does not restore them.
+
+    Left alone, every later progress line and error vanishes into a dead
+    buffer, so a batch run goes silent after its first OCR-ed file with no
+    sign that anything is wrong. Skipped when Tesseract is not installed.
+    """
+    import sys
+    import tempfile
+
+    if textlayer.find_tesseract() is None:
+        print("   (skipped: tesseract not installed)")
+        return
+    try:
+        import ocrmypdf  # noqa: F401
+    except ImportError:
+        print("   (skipped: ocrmypdf not installed)")
+        return
+
+    import pymupdf
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        # A one-page PDF with no text layer: rendered text, rasterised.
+        src = pymupdf.open()
+        page = src.new_page()
+        page.insert_text((72, 100), "Searchable page one", fontsize=18)
+        flat = pymupdf.open()
+        image = flat.new_page(width=page.rect.width, height=page.rect.height)
+        image.insert_image(page.rect, pixmap=page.get_pixmap(dpi=150))
+        scan = tmp / "scan.pdf"
+        flat.save(str(scan))
+        src.close()
+        flat.close()
+
+        before_out, before_err = sys.stdout, sys.stderr
+        textlayer.add_text_layer_with_tesseract(scan, tmp / "out.pdf")
+        assert sys.stdout is before_out, "ocrmypdf left sys.stdout replaced"
+        assert sys.stderr is before_err, "ocrmypdf left sys.stderr replaced"
+
+        with pymupdf.open(tmp / "out.pdf") as done:
+            assert len(done[0].get_text("text").strip()) > 5
 
 
 if __name__ == "__main__":
