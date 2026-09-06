@@ -3,5 +3,11 @@ pymupdf>=1.24
 pymupdf4llm>=1.28
 python-docx>=1.1
 markdown>=3.5
+
 # Only needed for the --zotero-* sources.
 pyzotero>=1.13
+
+# Only needed for --text-layer. It drives Tesseract, which must be installed
+# separately (it is a program, not a Python package), and needs Ghostscript.
+# Without both, --text-layer-engine deepseek still works.
+ocrmypdf>=15.0

@@ -5,17 +5,26 @@ as invisible text, positioned over the pixels they came from. The page still
 looks exactly the same, but Zotero can index it and a reader can search and
 select it.
 
-Placement comes from DeepSeek-OCR's <|grounding|> mode, which prefixes each
-block with `label[[x1, y1, x2, y2]]` in coordinates normalised to 0-1000
-against the page. (Verified against a page with text at a known position:
-x=72pt on a 595pt-wide page was reported as 115, matching 72/595*1000 = 121
-to within a percent.)
+Two engines can do the placing, and they are not equivalent.
 
-The font matters more than it looks. PyMuPDF derives a PDF's ToUnicode table
-by reverse-mapping glyphs, and most fonts map one glyph from several
-codepoints — in Times the space glyph comes back as U+00A0 and the hyphen as
-U+00AD, which would quietly break phrase search on every space in the
-document. pick_font() prefers fonts that survive that round trip.
+Tesseract (the default, driven through ocrmypdf) reports a box for every
+word, which is exactly what a text layer needs. Measured against the ink on
+a scanned paper, its words land within 0.33pt of the glyphs at the median
+and 4.4pt at worst.
+
+DeepSeek-OCR reports only *block* positions, via its <|grounding|> mode,
+which prefixes each block with `label[[x1, y1, x2, y2]]` normalised to
+0-1000 against the page. The block text then has to be re-flowed into that
+box in a substitute font, so words inside it drift — 3.19pt at the median
+and 69.5pt at worst on the same page. It is kept for machines with no
+Tesseract installed, and because the same OCR pass also feeds the Markdown.
+
+For the DeepSeek path the font matters more than it looks. PyMuPDF derives a
+PDF's ToUnicode table by reverse-mapping glyphs, and most fonts map one
+glyph from several codepoints — in Times the space glyph comes back as
+U+00A0 and the hyphen as U+00AD, which would quietly break phrase search on
+every space in the document. pick_font() prefers fonts that survive that
+round trip.
 """
 
 from __future__ import annotations

@@ -10,12 +10,13 @@ Ollama for LM Studio, and adds per-page OCR.
 [doc]: https://github.com/chemysterium/doc-ollama-summarizer
 [zot]: https://github.com/chemysterium/zotero-ollama-summarizer
 
-Two models do the work, both served by the same LM Studio instance:
+Three pieces do the work, split by what each is good at:
 
-| Role | Default model |
-| --- | --- |
-| Summaries | `google/gemma-4-26b-a4b-qat` |
-| OCR | `deepseek-ocr-2` |
+| Job | Tool | Why |
+| --- | --- | --- |
+| Summaries | `google/gemma-4-26b-a4b-qat` in LM Studio | Reads long documents, writes in the document's own language |
+| Reading scanned pages | `deepseek-ocr-2` in LM Studio | Best reading order and structure, for Markdown and summaries |
+| PDF text layers | Tesseract, via ocrmypdf | Reports a box for every word, so search and selection land in the right place |
 
 ## What is new compared to the earlier two
 
@@ -30,7 +31,8 @@ Two models do the work, both served by the same LM Studio instance:
 - **Scans become searchable.** `--text-layer` writes the OCR-ed words back
   into the PDF as invisible, positioned text, so Zotero can index a scan and
   you can search it in a reader. `--replace-pdf` does it to the attachment
-  in place, keeping a backup.
+  in place, keeping a backup. Tesseract places that text, because it is the
+  only one of the two engines that knows where each individual word sits.
 - **Markdown export without an LLM.** `--action markdown` runs extraction and
   OCR only, so you can get a clean `.md` of a scanned document without
   summarizing it.
